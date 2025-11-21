@@ -32,23 +32,42 @@ import { ArrowUpDown, Phone } from "lucide-react"
 import Papa from "papaparse"
 import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from "recharts"
 
+// Define proper types
+type CSVRow = {
+  [key: string]: string | undefined;
+}
+
+type PapaParseResult = {
+  data: CSVRow[];
+  errors: any[];
+  meta: any;
+}
+
 export default function Home() {
   const [activeFilter, setActiveFilter] = useState("Captira")
-  const [data, setData] = useState<any[]>([])
-  const [columns, setColumns] = useState<ColumnDef<any>[]>([])
+  const [data, setData] = useState<CSVRow[]>([])
+  const [columns, setColumns] = useState<ColumnDef<CSVRow>[]>([])
   const [globalFilter, setGlobalFilter] = useState("")
   const [loading, setLoading] = useState(false)
-  const [selectedDefendant, setSelectedDefendant] = useState<any>(null)
+  const [selectedDefendant, setSelectedDefendant] = useState<CSVRow | null>(null)
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dashboardData, setDashboardData] = useState<any>({
     balanceDistribution: [],
     paymentAging: [],
     locationDistribution: []
   })
+  
+  // Add new state for stat cards
+  const [statCards, setStatCards] = useState({
+    totalRecords: 0,
+    totalBalance: 0,
+    currentBalance: 0,
+    percentagePaid: 0
+  })
 
   useEffect(() => {
-    // Load data for both Captira and Simply filters
-    if (activeFilter === "Captira" || activeFilter === "Simply") {
+    // Load data for Captira, Simply, and Joint filters
+    if (activeFilter === "Captira" || activeFilter === "Simply" || activeFilter === "Joint") {
       loadCSVData()
     }
   }, [activeFilter])
@@ -56,7 +75,11 @@ export default function Home() {
   const loadCSVData = async () => {
     setLoading(true)
     try {
-      const fileName = activeFilter === "Captira" ? "captira-dataa.csv" : "simply-data.csv";
+      const fileName = 
+        activeFilter === "Captira" ? "captira-dataa.csv" : 
+        activeFilter === "Simply" ? "simply-data.csv" : 
+        "joint-data.csv";
+      
       const response = await fetch(`/${fileName}`);
       const csvText = await response.text();
       
@@ -65,45 +88,48 @@ export default function Home() {
         skipEmptyLines: true,
         dynamicTyping: false,
         transformHeader: (header) => header.trim(),
-        complete: (results) => {
+        complete: (results: PapaParseResult) => {
           if (results.data && results.data.length > 0) {
-            const headers = Object.keys(results.data[0])
-            
-            // Exclude columns based on active filter
-            const excludedColumns = 
-              activeFilter === "Captira" 
-                ? ["Address", "City", "State", "Zip", "Mobile Ph #", "Date of Birth"]
-                : ["Def. Phone"];
-            
-            const filteredHeaders = headers.filter(header => 
-              !excludedColumns.includes(header)
-            )
-            
-           // In your loadCSVData function, replace the columnDefs creation with this:
-
-const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
-  id: header, // Explicit ID to avoid key parsing issues
-  accessorFn: (row) => row[header], // Direct property access instead of accessorKey
-  header: ({ column }) => (
-    <Button
-      variant="ghost"
-      onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
-      className="hover:bg-gray-100 dark:hover:bg-gray-800 -ml-4"
-    >
-      {header}
-      <ArrowUpDown className="ml-2 h-4 w-4" />
-    </Button>
-  ),
-  cell: ({ getValue }) => ( // Use getValue() from cell context
-    <div className="py-2">{getValue() || '-'}</div>
-  ),
-}))
-            setColumns(columnDefs)
-            setData(results.data)
-            calculateDashboardData(results.data)
+            // Add type guard to ensure results.data[0] is an object
+            const firstRow = results.data[0];
+            if (firstRow && typeof firstRow === 'object' && firstRow !== null) {
+              const headers = Object.keys(firstRow)
+              
+              // Exclude columns based on active filter
+              const excludedColumns = 
+                activeFilter === "Simply" 
+                  ? ["Def. Phone"]
+                  : ["Address", "City", "State", "Zip", "Mobile Ph #", "Date of Birth", "Last Payment Date"];
+              
+              const filteredHeaders = headers.filter(header => 
+                !excludedColumns.includes(header)
+              )
+              
+              const columnDefs: ColumnDef<CSVRow>[] = filteredHeaders.map(header => ({
+                id: header,
+                accessorFn: (row) => row[header],
+                header: ({ column }) => (
+                  <Button
+                    variant="ghost"
+                    onClick={() => column.toggleSorting(column.getIsSorted() === "asc")}
+                    className="hover:bg-gray-100 dark:hover:bg-gray-800 -ml-4"
+                  >
+                    {header}
+                    <ArrowUpDown className="ml-2 h-4 w-4" />
+                  </Button>
+                ),
+                cell: ({ getValue }) => (
+                  <div className="py-2">{String(getValue?.() || '-')}</div>
+                ),
+              }))
+              
+              setColumns(columnDefs)
+              setData(results.data)
+              calculateDashboardData(results.data)
+            }
           }
         },
-        error: (error) => {
+        error: (error: Error) => {
           console.error('CSV parsing error:', error)
         }
       })
@@ -114,7 +140,8 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
     }
   }
 
-  const calculateDashboardData = (csvData: any[]) => {
+  // Updated calculateDashboardData function
+  const calculateDashboardData = (csvData: CSVRow[]) => {
     const balanceRanges = {
       '0–500': 0,
       '501–1,000': 0,
@@ -132,12 +159,16 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
 
     const locationCounts: { [key: string]: number } = {}
     const today = new Date()
+    
+    // Initialize cumulative values
+    let cumulativeTotalBalance = 0
+    let cumulativeCurrentBalance = 0
 
     csvData.forEach((row) => {
-      // Balance Distribution
+      // Balance Distribution (existing logic)
       let balance = 0
       const balanceField = 
-        activeFilter === "Captira"
+        activeFilter === "Captira" || activeFilter === "Joint"
           ? row['Balance Owed'] || row['Current Balance'] || row['Balance'] || '0'
           : row['Outstanding Balance'] || row['Total Due'] || '0';
       
@@ -155,8 +186,8 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
         else if (balance > 5000) balanceRanges['5,001+']++
       }
 
-      // Payment Aging (only for Captira)
-      if (activeFilter === "Captira" && row['Last Payment Date']) {
+      // Payment Aging (existing logic)
+      if ((activeFilter === "Captira" || activeFilter === "Joint") && row['Last Payment Date']) {
         try {
           const paymentDate = new Date(row['Last Payment Date'])
           if (!isNaN(paymentDate.getTime())) {
@@ -172,25 +203,56 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
         }
       }
 
-      // Location Distribution (only for Captira)
-      if (activeFilter === "Captira" && row['City']) {
+      // Location Distribution (existing logic)
+      if ((activeFilter === "Captira" || activeFilter === "Joint") && row['City']) {
         const city = row['City'].trim()
         if (city) {
           locationCounts[city] = (locationCounts[city] || 0) + 1
         }
       }
+
+      // Calculate cumulative balances for stat cards
+      if (activeFilter === "Simply") {
+        // For Simply: Total Due = total balance, Outstanding Balance = current balance
+        const totalDue = parseFloat((row['Total Due'] || '0').toString().replace(/[$,]/g, '')) || 0
+        const outstandingBalance = parseFloat((row['Outstanding Balance'] || '0').toString().replace(/[$,]/g, '')) || 0
+        
+        cumulativeTotalBalance += totalDue
+        cumulativeCurrentBalance += outstandingBalance
+      } else {
+        // For Captira/Joint: Use Balance Owed or Current Balance as the main balance
+        const balanceOwed = parseFloat((row['Balance Owed'] || row['Current Balance'] || row['Balance'] || '0').toString().replace(/[$,]/g, '')) || 0
+        const currentBalance = parseFloat((row['Current Balance'] || row['Balance Owed'] || row['Balance'] || '0').toString().replace(/[$,]/g, '')) || 0
+        
+        cumulativeTotalBalance += balanceOwed
+        cumulativeCurrentBalance += currentBalance
+      }
     })
 
+    // Calculate percentage paid
+    const percentagePaid = cumulativeTotalBalance > 0 
+      ? ((cumulativeTotalBalance - cumulativeCurrentBalance) / cumulativeTotalBalance) * 100 
+      : 0
+
+    // Update stat cards state
+    setStatCards({
+      totalRecords: csvData.length,
+      totalBalance: cumulativeTotalBalance,
+      currentBalance: cumulativeCurrentBalance,
+      percentagePaid: percentagePaid
+    })
+
+    // Rest of the existing logic...
     const balanceData = Object.entries(balanceRanges).map(([range, count]) => ({
       range,
       count
     }))
 
-    const agingData = activeFilter === "Captira"
+    const agingData = activeFilter !== "Simply"
       ? Object.entries(agingBuckets).map(([aging, count]) => ({ aging, count }))
       : []
 
-    const locationData = activeFilter === "Captira"
+    const locationData = activeFilter !== "Simply"
       ? Object.entries(locationCounts)
           .map(([location, count]) => ({ location, count }))
           .sort((a, b) => b.count - a.count)
@@ -204,13 +266,13 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
     })
   }
 
-  const handleRowClick = (defendant: any) => {
+  const handleRowClick = (defendant: CSVRow) => {
     setSelectedDefendant(defendant)
     setDialogOpen(true)
   }
 
   const handleCall = () => {
-    if (activeFilter === "Captira" && selectedDefendant?.['Mobile Ph #']) {
+    if (activeFilter !== "Simply" && selectedDefendant?.['Mobile Ph #']) {
       window.location.href = `tel:${selectedDefendant['Mobile Ph #']}`
     } else if (activeFilter === "Simply" && selectedDefendant?.['Def. Phone']) {
       window.location.href = `tel:${selectedDefendant['Def. Phone']}`
@@ -282,6 +344,34 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
           )}
         </>
       )
+    } else if (activeFilter === "Joint") {
+      return (
+        <>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Name</p>
+              <p className="text-sm font-semibold mt-1">{selectedDefendant['Defendant'] || '-'}</p>
+            </div>
+            <div>
+              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Date of Birth</p>
+              <p className="text-sm font-semibold mt-1">{selectedDefendant['Date of Birth'] || '-'}</p>
+            </div>
+          </div>
+
+          <div>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Address</p>
+            <p className="text-sm font-semibold mt-1">{selectedDefendant['Address'] || '-'}</p>
+            <p className="text-sm font-semibold">
+              {[selectedDefendant['City'], selectedDefendant['State'], selectedDefendant['Zip']].filter(Boolean).join(', ') || '-'}
+            </p>
+          </div>
+
+          <div>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Mobile Phone</p>
+            <p className="text-sm font-semibold mt-1">{selectedDefendant['Mobile Ph #'] || '-'}</p>
+          </div>
+        </>
+      )
     } else {
       // Simply dialog content
       return (
@@ -313,7 +403,7 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
           </header>
           <div className="flex items-center space-x-3">
             <Avatar className="h-10 w-10">
-              <AvatarImage src="https://github.com/shadcn.png" alt="Admin" />
+              <AvatarImage src="https://github.com/shadcn.png " alt="Admin" />
               <AvatarFallback>AD</AvatarFallback>
             </Avatar>
             <div className="hidden text-right sm:block">
@@ -351,7 +441,6 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
                     variant={activeFilter === "Joint" ? "default" : "outline"}
                     size="sm"
                     onClick={() => setActiveFilter("Joint")}
-                    disabled={true}
                   >
                     Joint
                   </Button>
@@ -362,20 +451,100 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
                 <div className="p-6 border rounded-lg mt-4">
                   <h2 className="text-2xl font-semibold mb-6">Dashboard Overview - {activeFilter}</h2>
                   
-                  {activeFilter === "Captira" ? (
+                  {/* Add Stat Cards */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+                    {/* Total Records Card */}
+                    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border hover:shadow-md transition-shadow">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className={`text-sm font-medium text-gray-500 dark:text-gray-400`}>
+                            Total Records
+                          </p>
+                          <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">
+                            {statCards.totalRecords.toLocaleString()}
+                          </p>
+                        </div>
+                        <div className="p-3 bg-blue-100 dark:bg-blue-900 rounded-full">
+                          <svg className="w-6 h-6 text-blue-600 dark:text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Total Balance Card */}
+                    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border hover:shadow-md transition-shadow">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className={`text-sm font-medium text-gray-500 dark:text-gray-400`}>
+                            {activeFilter === "Simply" ? "Total Due" : "Total Balance Owed"}
+                          </p>
+                          <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">
+                            ${statCards.totalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </p>
+                        </div>
+                        <div className="p-3 bg-green-100 dark:bg-green-900 rounded-full">
+                          <svg className="w-6 h-6 text-green-600 dark:text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Current Balance Card */}
+                    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border hover:shadow-md transition-shadow">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className={`text-sm font-medium text-gray-500 dark:text-gray-400`}>
+                            {activeFilter === "Simply" ? "Outstanding Balance" : "Current Balance"}
+                          </p>
+                          <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">
+                            ${statCards.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </p>
+                        </div>
+                        <div className="p-3 bg-yellow-100 dark:bg-yellow-900 rounded-full">
+                          <svg className="w-6 h-6 text-yellow-600 dark:text-yellow-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" />
+                          </svg>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Percentage Paid Card */}
+                    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border hover:shadow-md transition-shadow">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <p className={`text-sm font-medium text-gray-500 dark:text-gray-400`}>
+                            % Paid
+                          </p>
+                          <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">
+                            {statCards.percentagePaid.toFixed(1)}%
+                          </p>
+                        </div>
+                        <div className="p-3 bg-purple-100 dark:bg-purple-900 rounded-full">
+                          <svg className="w-6 h-6 text-purple-600 dark:text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                          </svg>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Existing dashboard charts */}
+                  {activeFilter !== "Simply" ? (
                     <div className="space-y-8">
                       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border">
                         <h3 className="text-xl font-semibold mb-4">Balance Distribution</h3>
                         <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={dashboardData.balanceDistribution}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="range" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey="count" fill="#3b82f6" name="Number of Defendants" />
-          </BarChart>
-        </ResponsiveContainer>
+                          <BarChart data={dashboardData.balanceDistribution}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="range" />
+                            <YAxis />
+                            <Tooltip />
+                            <Legend />
+                            <Bar dataKey="count" fill="#3b82f6" name="Number of Defendants" />
+                          </BarChart>
+                        </ResponsiveContainer>
                       </div>
 
                       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border">
@@ -387,7 +556,7 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
                             <YAxis />
                             <Tooltip />
                             <Legend />
-                            <Bar dataKey="count" fill="#10b981" name="Number of Defendants">
+                            <Bar dataKey="count" name="Number of Defendants">
                               {dashboardData.paymentAging.map((entry: any, index: number) => (
                                 <Cell 
                                   key={`cell-${index}`} 
@@ -408,7 +577,7 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
                             <YAxis dataKey="location" type="category" width={120} />
                             <Tooltip />
                             <Legend />
-                            <Bar dataKey="count" fill="#8b5cf6" name="Number of Defendants">
+                            <Bar dataKey="count" name="Number of Defendants">
                               {dashboardData.locationDistribution.map((entry: any, index: number) => (
                                 <Cell key={`cell-${index}`} fill={`hsl(${174 - index * 10}, 70%, ${60 - index * 3}%)`} />
                               ))}
@@ -422,18 +591,16 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
                       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border">
                         <h3 className="text-xl font-semibold mb-4">Balance Distribution</h3>
                         <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={dashboardData.balanceDistribution}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="range" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey="count" fill="#3b82f6" name="Number of Defendants" />
-          </BarChart>
-        </ResponsiveContainer>
+                          <BarChart data={dashboardData.balanceDistribution}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="range" />
+                            <YAxis />
+                            <Tooltip />
+                            <Legend />
+                            <Bar dataKey="count" fill="#3b82f6" name="Number of Defendants" />
+                          </BarChart>
+                        </ResponsiveContainer>
                       </div>
-
-                     
                     </div>
                   )}
                 </div>
@@ -557,21 +724,21 @@ const columnDefs: ColumnDef<any>[] = filteredHeaders.map(header => ({
               </div>
             )}
 
-<DialogFooter>
-  <Button
-    onClick={handleCall}
-    disabled={
-      activeFilter === "Captira" 
-        ? !selectedDefendant?.['Mobile Ph #'] 
-        : !selectedDefendant?.['Def. Phone']
-    }
-    style={{ color: '#FFFFFF', backgroundColor: '#323232' }}
-    className="w-full text-black hover:opacity-90"
-  >
-    <Phone className="mr-2 h-4 w-4" />
-    Call {activeFilter === "Captira" ? "Defendant" : "Account"}
-  </Button>
-</DialogFooter>
+            <DialogFooter>
+              <Button
+                onClick={handleCall}
+                disabled={
+                  activeFilter === "Simply" 
+                    ? !selectedDefendant?.['Def. Phone']
+                    : !selectedDefendant?.['Mobile Ph #']
+                }
+                style={{ color: '#FFFFFF', backgroundColor: '#323232' }}
+                className="w-full hover:opacity-90"
+              >
+                <Phone className="mr-2 h-4 w-4" />
+                Call {activeFilter === "Simply" ? "Account" : "Defendant"}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </main>
