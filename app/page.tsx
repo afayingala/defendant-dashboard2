@@ -30,11 +30,13 @@ import {
 } from "@tanstack/react-table"
 import { ArrowUpDown, Phone } from "lucide-react"
 import Papa from "papaparse"
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from "recharts"
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, Cell } from "recharts"
 
 // Define proper types
 type CSVRow = {
-  [key: string]: string | undefined;
+  [key: string]: string | number | undefined;
+  collectedAmount?: number;
+  __originalIndex?: number;
 }
 
 type PapaParseResult = {
@@ -65,6 +67,11 @@ export default function Home() {
     percentagePaid: 0
   })
 
+  // New state for collection dialog
+  const [collectDialogOpen, setCollectDialogOpen] = useState(false)
+  const [selectedRowForCollection, setSelectedRowForCollection] = useState<CSVRow | null>(null)
+  const [collectionAmountInput, setCollectionAmountInput] = useState("")
+
   useEffect(() => {
     // Load data for Captira, Simply, and Joint filters
     if (activeFilter === "Captira" || activeFilter === "Simply" || activeFilter === "Joint") {
@@ -90,7 +97,6 @@ export default function Home() {
         transformHeader: (header) => header.trim(),
         complete: (results: PapaParseResult) => {
           if (results.data && results.data.length > 0) {
-            // Add type guard to ensure results.data[0] is an object
             const firstRow = results.data[0];
             if (firstRow && typeof firstRow === 'object' && firstRow !== null) {
               const headers = Object.keys(firstRow)
@@ -123,9 +129,61 @@ export default function Home() {
                 ),
               }))
               
-              setColumns(columnDefs)
-              setData(results.data)
-              calculateDashboardData(results.data)
+              // Always add the two new columns at the end
+              const actionColumns: ColumnDef<CSVRow>[] = [
+                {
+                  id: 'collectedAmount',
+                  accessorKey: 'collectedAmount',
+                  header: 'Collected Amount',
+                  cell: ({ row }) => (
+                    <div className="py-2 font-semibold text-green-600">
+                      ${(row.original.collectedAmount || 0).toFixed(2)}
+                    </div>
+                  ),
+                },
+                {
+                  id: 'actions',
+                  header: 'Actions',
+                  cell: ({ row }) => (
+                    <div className="flex gap-2 py-2">
+                      <Button 
+                        size="sm" 
+                        variant="outline"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedDefendant(row.original);
+                          setDialogOpen(true);
+                        }}
+                      >
+                        <Phone className="h-4 w-4" />
+                      </Button>
+                      <Button 
+                        size="sm" 
+                        variant="default"
+                        className="bg-blue-600 hover:bg-blue-700"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleCollectClick(row.original);
+                        }}
+                      >
+                        Collect
+                      </Button>
+                    </div>
+                  ),
+                }
+              ];
+              
+              setColumns([...columnDefs, ...actionColumns])
+              
+              // Add collectedAmount and original index to each row
+              const rowsWithCollectedAmount = results.data.map((row, index) => ({
+                ...row,
+                collectedAmount: 0,
+                __originalIndex: index
+              }));
+              
+              setData(rowsWithCollectedAmount)
+              calculateDashboardData(rowsWithCollectedAmount)
             }
           }
         },
@@ -138,6 +196,60 @@ export default function Home() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // Handle collect button click
+  const handleCollectClick = (row: CSVRow) => {
+    setSelectedRowForCollection(row)
+    setCollectionAmountInput("")
+    setCollectDialogOpen(true)
+  }
+
+  // Handle submit collection
+  const handleSubmitCollection = () => {
+    if (!selectedRowForCollection) return
+    
+    const amount = parseFloat(collectionAmountInput)
+    if (isNaN(amount) || amount <= 0) {
+      alert("Please enter a valid amount")
+      return
+    }
+
+    const rowIndex = selectedRowForCollection.__originalIndex
+    if (rowIndex === undefined || rowIndex === -1) return
+
+    const newData = [...data]
+    const targetRow = { ...newData[rowIndex] }
+    
+    // Update collected amount
+    const currentCollected = targetRow.collectedAmount || 0
+    targetRow.collectedAmount = currentCollected + amount
+
+    // Update balance field
+    let balanceField: string
+    let currentBalance: number
+    
+    if (activeFilter === "Simply") {
+      balanceField = "Outstanding Balance"
+      currentBalance = parseFloat((targetRow[balanceField] || "0").toString().replace(/[$,]/g, '')) || 0
+      targetRow[balanceField] = `$${(currentBalance - amount).toFixed(2)}`
+    } else {
+      // For Captira/Joint, try Current Balance first, then Balance Owed
+      balanceField = targetRow["Current Balance"] !== undefined ? "Current Balance" : "Balance Owed"
+      currentBalance = parseFloat((targetRow[balanceField] || "0").toString().replace(/[$,]/g, '')) || 0
+      targetRow[balanceField] = `$${(currentBalance - amount).toFixed(2)}`
+    }
+
+    newData[rowIndex] = targetRow
+    setData(newData)
+    
+    // Recalculate dashboard stats based on new data
+    calculateDashboardData(newData)
+
+    // Close dialog and reset
+    setCollectDialogOpen(false)
+    setSelectedRowForCollection(null)
+    setCollectionAmountInput("")
   }
 
   // Updated calculateDashboardData function
@@ -175,7 +287,7 @@ export default function Home() {
       if (typeof balanceField === 'string') {
         balance = parseFloat(balanceField.replace(/[$,]/g, ''))
       } else {
-        balance = parseFloat(balanceField) || 0
+        balance = parseFloat(balanceField as string) || 0
       }
 
       if (!isNaN(balance)) {
@@ -650,8 +762,7 @@ export default function Home() {
                                 <TableRow
                                   key={row.id}
                                   data-state={row.getIsSelected() && "selected"}
-                                  onClick={() => handleRowClick(row.original)}
-                                  className="cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800"
+                                  className="hover:bg-gray-50 dark:hover:bg-gray-800"
                                 >
                                   {row.getVisibleCells().map((cell) => (
                                     <TableCell key={cell.id} className="whitespace-nowrap">
@@ -737,6 +848,59 @@ export default function Home() {
               >
                 <Phone className="mr-2 h-4 w-4" />
                 Call {activeFilter === "Simply" ? "Account" : "Defendant"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Collection Dialog */}
+        <Dialog open={collectDialogOpen} onOpenChange={setCollectDialogOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="text-xl font-semibold">
+                Record Collection
+              </DialogTitle>
+            </DialogHeader>
+            
+            <div className="space-y-4 py-4">
+              <div>
+                <p className="text-sm font-medium text-gray-500 dark:text-gray-400 mb-2">
+                  Enter collected amount for:
+                </p>
+                <p className="text-lg font-semibold">
+                  {selectedRowForCollection?.[activeFilter === "Simply" ? "Name" : "Defendant"] || 'N/A'}
+                </p>
+              </div>
+
+              <div>
+                <label className="text-sm font-medium text-gray-500 dark:text-gray-400">
+                  Collected Amount ($)
+                </label>
+                <Input
+                  type="number"
+                  placeholder="0.00"
+                  value={collectionAmountInput}
+                  onChange={(e) => setCollectionAmountInput(e.target.value)}
+                  className="mt-1"
+                  step="0.01"
+                  min="0"
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                onClick={() => setCollectDialogOpen(false)}
+                variant="outline"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={handleSubmitCollection}
+                style={{ color: '#FFFFFF', backgroundColor: '#323232' }}
+                className="hover:opacity-90"
+              >
+                Submit Collection
               </Button>
             </DialogFooter>
           </DialogContent>
