@@ -109,7 +109,7 @@ export default function Home() {
                   ? ["Def. Phone"]
                   : activeFilter === "Joint"
                   ? ["Contact", "_source"]
-                  : ["Address", "City", "State", "Zip", "Mobile Ph #", "Date of Birth", "Last Payment Date"];
+                  : ["Address", "City", "State", "Zip", "Mobile Ph #", "Date of Birth"];
               
               const filteredHeaders = headers.filter(header => 
                 !excludedColumns.includes(header)
