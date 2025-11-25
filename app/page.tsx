@@ -18,7 +18,7 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog"
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import {
   useReactTable,
   getCoreRowModel,
@@ -59,7 +59,6 @@ export default function Home() {
     locationDistribution: []
   })
   
-  // Add new state for stat cards
   const [statCards, setStatCards] = useState({
     totalRecords: 0,
     totalBalance: 0,
@@ -67,13 +66,17 @@ export default function Home() {
     percentagePaid: 0
   })
 
-  // New state for collection dialog
   const [collectDialogOpen, setCollectDialogOpen] = useState(false)
   const [selectedRowForCollection, setSelectedRowForCollection] = useState<CSVRow | null>(null)
   const [collectionAmountInput, setCollectionAmountInput] = useState("")
 
+  const [yearFilter, setYearFilter] = useState<string>("all")
+  const [balanceRangeFilter, setBalanceRangeFilter] = useState<number[]>([0, 0])
+  const [availableYears, setAvailableYears] = useState<string[]>([])
+  const [minBalance, setMinBalance] = useState(0)
+  const [maxBalance, setMaxBalance] = useState(0)
+
   useEffect(() => {
-    // Load data for Captira, Simply, and Joint filters
     if (activeFilter === "Captira" || activeFilter === "Simply" || activeFilter === "Joint") {
       loadCSVData()
     }
@@ -101,10 +104,11 @@ export default function Home() {
             if (firstRow && typeof firstRow === 'object' && firstRow !== null) {
               const headers = Object.keys(firstRow)
               
-              // Exclude columns based on active filter
               const excludedColumns = 
                 activeFilter === "Simply" 
                   ? ["Def. Phone"]
+                  : activeFilter === "Joint"
+                  ? ["Contact", "_source"]
                   : ["Address", "City", "State", "Zip", "Mobile Ph #", "Date of Birth", "Last Payment Date"];
               
               const filteredHeaders = headers.filter(header => 
@@ -129,7 +133,6 @@ export default function Home() {
                 ),
               }))
               
-              // Always add the two new columns at the end
               const actionColumns: ColumnDef<CSVRow>[] = [
                 {
                   id: 'collectedAmount',
@@ -145,7 +148,7 @@ export default function Home() {
                   id: 'actions',
                   header: 'Actions',
                   cell: ({ row }) => (
-                    <div className="flex gap-2 py-2">
+                    <div className="flex gap-2 py-2 justify-center">
                       <Button 
                         size="sm" 
                         variant="outline"
@@ -175,7 +178,6 @@ export default function Home() {
               
               setColumns([...columnDefs, ...actionColumns])
               
-              // Add collectedAmount and original index to each row
               const rowsWithCollectedAmount = results.data.map((row, index) => ({
                 ...row,
                 collectedAmount: 0,
@@ -183,6 +185,7 @@ export default function Home() {
               }));
               
               setData(rowsWithCollectedAmount)
+              calculateFilters(rowsWithCollectedAmount)
               calculateDashboardData(rowsWithCollectedAmount)
             }
           }
@@ -198,14 +201,90 @@ export default function Home() {
     }
   }
 
-  // Handle collect button click
+  const calculateFilters = (csvData: CSVRow[]) => {
+    let min = Infinity
+    let max = -Infinity
+    
+    csvData.forEach((row) => {
+      let balanceField
+      if (activeFilter === "Simply") {
+        balanceField = row['Outstanding Balance'] || row['Total Due'] || '0'
+      } else if (activeFilter === "Joint") {
+        balanceField = row['Current_Balance'] || '0'
+      } else {
+        balanceField = row['Balance Owed'] || row['Current Balance'] || row['Balance'] || '0'
+      }
+      
+      const balance = parseFloat(String(balanceField || '0').replace(/[$,]/g, '')) || 0
+      min = Math.min(min, balance)
+      max = Math.max(max, balance)
+    })
+    
+    setMinBalance(min === Infinity ? 0 : min)
+    setMaxBalance(max === -Infinity ? 0 : max)
+    setBalanceRangeFilter([min === Infinity ? 0 : min, max === -Infinity ? 0 : max])
+    
+    if (activeFilter === "Captira") {
+      const years = new Set<string>()
+      csvData.forEach((row) => {
+        const dateField = row['Last Payment Date']
+        if (dateField) {
+          try {
+            const year = new Date(dateField).getFullYear()
+            if (!isNaN(year)) {
+              years.add(year.toString())
+            }
+          } catch (e) {}
+        }
+      })
+      setAvailableYears(Array.from(years).sort().reverse())
+      setYearFilter("all")
+    } else {
+      setAvailableYears([])
+      setYearFilter("all")
+    }
+  }
+
+  const filteredData = useMemo(() => {
+    if (!data.length) return []
+    
+    return data.filter((row) => {
+      if (yearFilter !== "all" && activeFilter === "Captira") {
+        const dateField = row['Last Payment Date']
+        if (dateField) {
+          try {
+            const rowYear = new Date(dateField).getFullYear().toString()
+            if (rowYear !== yearFilter) return false
+          } catch (e) {
+            return false
+          }
+        } else {
+          return false
+        }
+      }
+      
+      let balanceField
+      if (activeFilter === "Simply") {
+        balanceField = row['Outstanding Balance'] || row['Total Due'] || '0'
+      } else if (activeFilter === "Joint") {
+        balanceField = row['Current_Balance'] || '0'
+      } else {
+        balanceField = row['Balance Owed'] || row['Current Balance'] || row['Balance'] || '0'
+      }
+      
+      const balance = parseFloat(String(balanceField || '0').replace(/[$,]/g, '')) || 0
+      if (balance < balanceRangeFilter[0] || balance > balanceRangeFilter[1]) return false
+      
+      return true
+    })
+  }, [data, yearFilter, balanceRangeFilter, activeFilter])
+
   const handleCollectClick = (row: CSVRow) => {
     setSelectedRowForCollection(row)
     setCollectionAmountInput("")
     setCollectDialogOpen(true)
   }
 
-  // Handle submit collection
   const handleSubmitCollection = () => {
     if (!selectedRowForCollection) return
     
@@ -221,38 +300,37 @@ export default function Home() {
     const newData = [...data]
     const targetRow = { ...newData[rowIndex] }
     
-    // Update collected amount
     const currentCollected = targetRow.collectedAmount || 0
     targetRow.collectedAmount = currentCollected + amount
 
-    // Update balance field
     let balanceField: string
     let currentBalance: number
     
     if (activeFilter === "Simply") {
       balanceField = "Outstanding Balance"
-      currentBalance = parseFloat((targetRow[balanceField] || "0").toString().replace(/[$,]/g, '')) || 0
+      currentBalance = parseFloat(String(targetRow[balanceField] || "0").replace(/[$,]/g, '')) || 0
+      targetRow[balanceField] = `$${(currentBalance - amount).toFixed(2)}`
+    } else if (activeFilter === "Joint") {
+      balanceField = "Current_Balance"
+      currentBalance = parseFloat(String(targetRow[balanceField] || "0").replace(/[$,]/g, '')) || 0
       targetRow[balanceField] = `$${(currentBalance - amount).toFixed(2)}`
     } else {
-      // For Captira/Joint, try Current Balance first, then Balance Owed
       balanceField = targetRow["Current Balance"] !== undefined ? "Current Balance" : "Balance Owed"
-      currentBalance = parseFloat((targetRow[balanceField] || "0").toString().replace(/[$,]/g, '')) || 0
+      currentBalance = parseFloat(String(targetRow[balanceField] || "0").replace(/[$,]/g, '')) || 0
       targetRow[balanceField] = `$${(currentBalance - amount).toFixed(2)}`
     }
 
     newData[rowIndex] = targetRow
     setData(newData)
     
-    // Recalculate dashboard stats based on new data
+    calculateFilters(newData)
     calculateDashboardData(newData)
 
-    // Close dialog and reset
     setCollectDialogOpen(false)
     setSelectedRowForCollection(null)
     setCollectionAmountInput("")
   }
 
-  // Updated calculateDashboardData function
   const calculateDashboardData = (csvData: CSVRow[]) => {
     const balanceRanges = {
       '0–500': 0,
@@ -272,22 +350,25 @@ export default function Home() {
     const locationCounts: { [key: string]: number } = {}
     const today = new Date()
     
-    // Initialize cumulative values
     let cumulativeTotalBalance = 0
     let cumulativeCurrentBalance = 0
 
     csvData.forEach((row) => {
-      // Balance Distribution (existing logic)
       let balance = 0
-      const balanceField = 
-        activeFilter === "Captira" || activeFilter === "Joint"
-          ? row['Balance Owed'] || row['Current Balance'] || row['Balance'] || '0'
-          : row['Outstanding Balance'] || row['Total Due'] || '0';
+      let balanceField
+      
+      if (activeFilter === "Simply") {
+        balanceField = row['Outstanding Balance'] || row['Total Due'] || '0'
+      } else if (activeFilter === "Joint") {
+        balanceField = row['Current_Balance'] || '0'
+      } else {
+        balanceField = row['Balance Owed'] || row['Current Balance'] || row['Balance'] || '0'
+      }
       
       if (typeof balanceField === 'string') {
         balance = parseFloat(balanceField.replace(/[$,]/g, ''))
       } else {
-        balance = parseFloat(balanceField as string) || 0
+        balance = parseFloat(String(balanceField || '0').replace(/[$,]/g, '')) || 0
       }
 
       if (!isNaN(balance)) {
@@ -298,8 +379,7 @@ export default function Home() {
         else if (balance > 5000) balanceRanges['5,001+']++
       }
 
-      // Payment Aging (existing logic)
-      if ((activeFilter === "Captira" || activeFilter === "Joint") && row['Last Payment Date']) {
+      if (activeFilter === "Captira" && row['Last Payment Date']) {
         try {
           const paymentDate = new Date(row['Last Payment Date'])
           if (!isNaN(paymentDate.getTime())) {
@@ -310,43 +390,37 @@ export default function Home() {
             else if (daysSince <= 90) agingBuckets['61–90 days']++
             else agingBuckets['91+ days']++
           }
-        } catch (e) {
-          // Invalid date
-        }
+        } catch (e) {}
       }
 
-      // Location Distribution (existing logic)
-      if ((activeFilter === "Captira" || activeFilter === "Joint") && row['City']) {
-        const city = row['City'].trim()
+      if (activeFilter === "Captira" && row['City']) {
+        const city = typeof row['City'] === 'string' ? row['City'].trim() : ''
         if (city) {
           locationCounts[city] = (locationCounts[city] || 0) + 1
         }
       }
 
-      // Calculate cumulative balances for stat cards
+      let totalDue, currentBalance
+      
       if (activeFilter === "Simply") {
-        // For Simply: Total Due = total balance, Outstanding Balance = current balance
-        const totalDue = parseFloat((row['Total Due'] || '0').toString().replace(/[$,]/g, '')) || 0
-        const outstandingBalance = parseFloat((row['Outstanding Balance'] || '0').toString().replace(/[$,]/g, '')) || 0
-        
-        cumulativeTotalBalance += totalDue
-        cumulativeCurrentBalance += outstandingBalance
+        totalDue = parseFloat(String(row['Total Due'] || '0').replace(/[$,]/g, '')) || 0
+        currentBalance = parseFloat(String(row['Outstanding Balance'] || '0').replace(/[$,]/g, '')) || 0
+      } else if (activeFilter === "Joint") {
+        totalDue = parseFloat(String(row['Total_Balance'] || '0').replace(/[$,]/g, '')) || 0
+        currentBalance = parseFloat(String(row['Current_Balance'] || '0').replace(/[$,]/g, '')) || 0
       } else {
-        // For Captira/Joint: Use Balance Owed or Current Balance as the main balance
-        const balanceOwed = parseFloat((row['Balance Owed'] || row['Current Balance'] || row['Balance'] || '0').toString().replace(/[$,]/g, '')) || 0
-        const currentBalance = parseFloat((row['Current Balance'] || row['Balance Owed'] || row['Balance'] || '0').toString().replace(/[$,]/g, '')) || 0
-        
-        cumulativeTotalBalance += balanceOwed
-        cumulativeCurrentBalance += currentBalance
+        totalDue = parseFloat(String(row['Balance Owed'] || row['Current Balance'] || row['Balance'] || '0').replace(/[$,]/g, '')) || 0
+        currentBalance = parseFloat(String(row['Current Balance'] || row['Balance Owed'] || row['Balance'] || '0').replace(/[$,]/g, '')) || 0
       }
+      
+      cumulativeTotalBalance += totalDue
+      cumulativeCurrentBalance += currentBalance
     })
 
-    // Calculate percentage paid
     const percentagePaid = cumulativeTotalBalance > 0 
       ? ((cumulativeTotalBalance - cumulativeCurrentBalance) / cumulativeTotalBalance) * 100 
       : 0
 
-    // Update stat cards state
     setStatCards({
       totalRecords: csvData.length,
       totalBalance: cumulativeTotalBalance,
@@ -354,17 +428,16 @@ export default function Home() {
       percentagePaid: percentagePaid
     })
 
-    // Rest of the existing logic...
     const balanceData = Object.entries(balanceRanges).map(([range, count]) => ({
       range,
       count
     }))
 
-    const agingData = activeFilter !== "Simply"
+    const agingData = activeFilter === "Captira"
       ? Object.entries(agingBuckets).map(([aging, count]) => ({ aging, count }))
       : []
 
-    const locationData = activeFilter !== "Simply"
+    const locationData = activeFilter === "Captira"
       ? Object.entries(locationCounts)
           .map(([location, count]) => ({ location, count }))
           .sort((a, b) => b.count - a.count)
@@ -388,11 +461,13 @@ export default function Home() {
       window.location.href = `tel:${selectedDefendant['Mobile Ph #']}`
     } else if (activeFilter === "Simply" && selectedDefendant?.['Def. Phone']) {
       window.location.href = `tel:${selectedDefendant['Def. Phone']}`
+    } else if (activeFilter === "Joint" && selectedDefendant?.['Contact']) {
+      window.location.href = `tel:${selectedDefendant['Contact']}`
     }
   }
 
   const table = useReactTable({
-    data,
+    data: filteredData,
     columns,
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
@@ -459,33 +534,32 @@ export default function Home() {
     } else if (activeFilter === "Joint") {
       return (
         <>
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Name</p>
-              <p className="text-sm font-semibold mt-1">{selectedDefendant['Defendant'] || '-'}</p>
-            </div>
-            <div>
-              <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Date of Birth</p>
-              <p className="text-sm font-semibold mt-1">{selectedDefendant['Date of Birth'] || '-'}</p>
-            </div>
+          <div>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Name</p>
+            <p className="text-lg font-bold mt-1">{selectedDefendant['Defendant_Name'] || '-'}</p>
           </div>
 
           <div>
-            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Address</p>
-            <p className="text-sm font-semibold mt-1">{selectedDefendant['Address'] || '-'}</p>
-            <p className="text-sm font-semibold">
-              {[selectedDefendant['City'], selectedDefendant['State'], selectedDefendant['Zip']].filter(Boolean).join(', ') || '-'}
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Contact</p>
+            <p className="text-sm font-semibold mt-1">{selectedDefendant['Contact'] || '-'}</p>
+          </div>
+
+          <div>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Total Balance</p>
+            <p className="text-lg font-bold mt-1">
+              {selectedDefendant['Total_Balance'] || '-'}
             </p>
           </div>
 
           <div>
-            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Mobile Phone</p>
-            <p className="text-sm font-semibold mt-1">{selectedDefendant['Mobile Ph #'] || '-'}</p>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Current Balance</p>
+            <p className="text-lg font-bold mt-1">
+              {selectedDefendant['Current_Balance'] || '-'}
+            </p>
           </div>
         </>
       )
     } else {
-      // Simply dialog content
       return (
         <>
           <div>
@@ -515,7 +589,7 @@ export default function Home() {
           </header>
           <div className="flex items-center space-x-3">
             <Avatar className="h-10 w-10">
-              <AvatarImage src="https://github.com/shadcn.png " alt="Admin" />
+              <AvatarImage src="https://github.com/shadcn.png   " alt="Admin" />
               <AvatarFallback>AD</AvatarFallback>
             </Avatar>
             <div className="hidden text-right sm:block">
@@ -563,9 +637,7 @@ export default function Home() {
                 <div className="p-6 border rounded-lg mt-4">
                   <h2 className="text-2xl font-semibold mb-6">Dashboard Overview - {activeFilter}</h2>
                   
-                  {/* Add Stat Cards */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-                    {/* Total Records Card */}
                     <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border hover:shadow-md transition-shadow">
                       <div className="flex items-center justify-between">
                         <div>
@@ -584,12 +656,11 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* Total Balance Card */}
                     <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border hover:shadow-md transition-shadow">
                       <div className="flex items-center justify-between">
                         <div>
                           <p className={`text-sm font-medium text-gray-500 dark:text-gray-400`}>
-                            {activeFilter === "Simply" ? "Total Due" : "Total Balance Owed"}
+                            {activeFilter === "Simply" ? "Total Due" : activeFilter === "Joint" ? "Total Balance" : "Total Balance Owed"}
                           </p>
                           <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">
                             ${statCards.totalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -603,12 +674,11 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* Current Balance Card */}
                     <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border hover:shadow-md transition-shadow">
                       <div className="flex items-center justify-between">
                         <div>
                           <p className={`text-sm font-medium text-gray-500 dark:text-gray-400`}>
-                            {activeFilter === "Simply" ? "Outstanding Balance" : "Current Balance"}
+                            {activeFilter === "Simply" ? "Outstanding Balance" : activeFilter === "Joint" ? "Current Balance" : "Current Balance"}
                           </p>
                           <p className="text-3xl font-bold text-gray-900 dark:text-white mt-2">
                             ${statCards.currentBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -622,7 +692,6 @@ export default function Home() {
                       </div>
                     </div>
 
-                    {/* Percentage Paid Card */}
                     <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border hover:shadow-md transition-shadow">
                       <div className="flex items-center justify-between">
                         <div>
@@ -642,7 +711,6 @@ export default function Home() {
                     </div>
                   </div>
                   
-                  {/* Existing dashboard charts */}
                   {activeFilter !== "Simply" ? (
                     <div className="space-y-8">
                       <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border">
@@ -659,44 +727,48 @@ export default function Home() {
                         </ResponsiveContainer>
                       </div>
 
-                      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border">
-                        <h3 className="text-xl font-semibold mb-4">Days Since Last Payment</h3>
-                        <ResponsiveContainer width="100%" height={300}>
-                          <BarChart data={dashboardData.paymentAging}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="aging" />
-                            <YAxis />
-                            <Tooltip />
-                            <Legend />
-                            <Bar dataKey="count" name="Number of Defendants">
-                              {dashboardData.paymentAging.map((entry: any, index: number) => (
-                                <Cell 
-                                  key={`cell-${index}`} 
-                                  fill={index === 3 ? '#B97979' : index === 2 ? '#f59e0b' : index === 1 ? '#eab308' : '#10b981'} 
-                                />
-                              ))}
-                            </Bar>
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
+                      {activeFilter === "Captira" && (
+                        <>
+                          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border">
+                            <h3 className="text-xl font-semibold mb-4">Days Since Last Payment</h3>
+                            <ResponsiveContainer width="100%" height={300}>
+                              <BarChart data={dashboardData.paymentAging}>
+                                <CartesianGrid strokeDasharray="3 3" />
+                                <XAxis dataKey="aging" />
+                                <YAxis />
+                                <Tooltip />
+                                <Legend />
+                                <Bar dataKey="count" name="Number of Defendants">
+                                  {dashboardData.paymentAging.map((entry: any, index: number) => (
+                                    <Cell 
+                                      key={`cell-${index}`} 
+                                      fill={index === 3 ? '#B97979' : index === 2 ? '#f59e0b' : index === 1 ? '#eab308' : '#10b981'} 
+                                    />
+                                  ))}
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
 
-                      <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border">
-                        <h3 className="text-xl font-semibold mb-4">Defendants by Location (Top 10 Cities)</h3>
-                        <ResponsiveContainer width="100%" height={400}>
-                          <BarChart data={dashboardData.locationDistribution} layout="vertical">
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis type="number" />
-                            <YAxis dataKey="location" type="category" width={120} />
-                            <Tooltip />
-                            <Legend />
-                            <Bar dataKey="count" name="Number of Defendants">
-                              {dashboardData.locationDistribution.map((entry: any, index: number) => (
-                                <Cell key={`cell-${index}`} fill={`hsl(${174 - index * 10}, 70%, ${60 - index * 3}%)`} />
-                              ))}
-                            </Bar>
-                          </BarChart>
-                        </ResponsiveContainer>
-                      </div>
+                          <div className="bg-white dark:bg-gray-800 p-6 rounded-lg border">
+                            <h3 className="text-xl font-semibold mb-4">Defendants by Location (Top 10 Cities)</h3>
+                            <ResponsiveContainer width="100%" height={400}>
+                              <BarChart data={dashboardData.locationDistribution} layout="vertical">
+                                <CartesianGrid strokeDasharray="3 3" />
+                                <XAxis type="number" />
+                                <YAxis dataKey="location" type="category" width={120} />
+                                <Tooltip />
+                                <Legend />
+                                <Bar dataKey="count" name="Number of Defendants">
+                                  {dashboardData.locationDistribution.map((entry: any, index: number) => (
+                                    <Cell key={`cell-${index}`} fill={`hsl(${174 - index * 10}, 70%, ${60 - index * 3}%)`} />
+                                  ))}
+                                </Bar>
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </>
+                      )}
                     </div>
                   ) : (
                     <div className="space-y-8">
@@ -722,6 +794,67 @@ export default function Home() {
                 <div className="p-6 border rounded-lg mt-4">
                   <h2 className="text-2xl font-semibold mb-4">Data - {activeFilter}</h2>
                   
+                  {/* Compact Filter Controls - Left aligned with continuous balance range */}
+                  <div className="mb-6 p-4 bg-gray-50 dark:bg-gray-800 rounded-lg border">
+                    <div className="flex flex-col lg:flex-row gap-4 items-start">
+                      {/* Year Filter */}
+                      {availableYears.length > 0 && (
+                        <div className="flex-1 min-w-0 lg:max-w-xs">
+                          <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-2">
+                            Filter by Year
+                          </label>
+                          <select 
+                            value={yearFilter} 
+                            onChange={(e) => setYearFilter(e.target.value)}
+                            className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-900 text-gray-900 dark:text-white text-sm"
+                          >
+                            <option value="all">All Years</option>
+                            {availableYears.map(year => (
+                              <option key={year} value={year}>{year}</option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                      
+                      {/* Balance Range Filter - Single continuous line */}
+                      <div className="flex-1 min-w-0 lg:max-w-xs">
+                        <label className="text-sm font-medium text-gray-700 dark:text-gray-300 block mb-2">
+                          Balance Range
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs text-gray-500 dark:text-gray-400 w-16">
+                            ${balanceRangeFilter[0].toLocaleString()}
+                          </span>
+                          <div className="flex-1 flex items-center">
+                            <input
+                              type="range"
+                              min={minBalance}
+                              max={maxBalance}
+                              value={balanceRangeFilter[0]}
+                              onChange={(e) => setBalanceRangeFilter([parseFloat(e.target.value), balanceRangeFilter[1]])}
+                              className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 appearance-none cursor-pointer"
+                              style={{ borderRadius: '0.25rem 0 0 0.25rem' }}
+                            />
+                            <input
+                              type="range"
+                              min={minBalance}
+                              max={maxBalance}
+                              value={balanceRangeFilter[1]}
+                              onChange={(e) => setBalanceRangeFilter([balanceRangeFilter[0], parseFloat(e.target.value)])}
+                              className="flex-1 h-2 bg-gray-200 dark:bg-gray-700 appearance-none cursor-pointer"
+                              style={{ borderRadius: '0 0.25rem 0.25rem 0' }}
+                            />
+                          </div>
+                          <span className="text-xs text-gray-500 dark:text-gray-400 w-16 text-right">
+                            ${balanceRangeFilter[1].toLocaleString()}
+                          </span>
+                        </div>
+                      </div>
+                      
+                     
+                    </div>
+                  </div>
+                  
                   {loading ? (
                     <div className="text-center py-8">Loading data...</div>
                   ) : (
@@ -734,7 +867,7 @@ export default function Home() {
                           className="max-w-sm"
                         />
                         <p className="text-sm text-gray-600 dark:text-gray-400">
-                          Total records: {data.length}
+                          Total records: {filteredData.length}
                         </p>
                       </div>
 
@@ -841,6 +974,8 @@ export default function Home() {
                 disabled={
                   activeFilter === "Simply" 
                     ? !selectedDefendant?.['Def. Phone']
+                    : activeFilter === "Joint"
+                    ? !selectedDefendant?.['Contact']
                     : !selectedDefendant?.['Mobile Ph #']
                 }
                 style={{ color: '#FFFFFF', backgroundColor: '#323232' }}
@@ -868,7 +1003,7 @@ export default function Home() {
                   Enter collected amount for:
                 </p>
                 <p className="text-lg font-semibold">
-                  {selectedRowForCollection?.[activeFilter === "Simply" ? "Name" : "Defendant"] || 'N/A'}
+                  {selectedRowForCollection?.[activeFilter === "Joint" ? "Defendant_Name" : activeFilter === "Simply" ? "Name" : "Defendant"] || 'N/A'}
                 </p>
               </div>
 
